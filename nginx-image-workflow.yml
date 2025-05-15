@@ -1,0 +1,171 @@
+name: Nginx Docker Build and Deploy
+
+on:
+  push:
+    branches:
+      - "features/**"
+      - "feature/**"
+      - main
+  pull_request:
+    branches:
+      - main
+    types: [opened, reopened, ready_for_review]
+
+jobs:
+  build-development:
+    runs-on: bka-devops
+    timeout-minutes: 5
+    environment: dockerhub-registry
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+    env:
+      DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+    outputs:
+      DOCKER_TAG: ${{ steps.docker_tag_step.outputs.DOCKER_TAG }}
+    steps:
+
+      - name: Checkout the Latest Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Define Docker Image Name
+        run: |
+          IMAGE_NAME="$DOCKER_USERNAME/my-nginx-app"
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+          echo "✅ IMAGE_NAME set to: $IMAGE_NAME"
+      - name: Ensure Directory Exists for Docker Version
+        run: |
+          VERSION_FILE="${RUNNER_TEMP}/docker_version.txt"
+          mkdir -p "$(dirname "$VERSION_FILE")"
+          touch "$VERSION_FILE"
+          echo "VERSION_FILE=$VERSION_FILE" >> $GITHUB_ENV
+
+
+      - name: Check and Set Docker Tag
+        id: docker_tag_step
+        run: |
+          VERSION_FILE="$HOME/docker_version.txt"
+          if [[ -f "$VERSION_FILE" ]]; then
+            LAST_VERSION=$(cat "$VERSION_FILE" | sed 's/v//')
+            NEXT_VERSION=$((LAST_VERSION + 1))
+          else
+            NEXT_VERSION=1
+          fi
+          echo "v$NEXT_VERSION" > "$VERSION_FILE"
+          echo "DOCKER_TAG=v$NEXT_VERSION" >> $GITHUB_ENV
+          echo "✅ DOCKER_TAG set to: v$NEXT_VERSION"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+     
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          driver: docker-container
+
+      - name: Build and Push Docker Image to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.DOCKER_TAG }},${{ env.IMAGE_NAME }}:latest
+          no-cache: true
+
+  deploy-development:
+    runs-on: bka-devops
+    timeout-minutes: 5
+    environment: dockerhub-registry
+    needs: build-development
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Pull and Run Latest Development Image
+        run: |
+          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/my-nginx-app"
+          
+          # Stop and remove the old container
+          docker stop nginx-dev || true
+          docker rm -f nginx-dev || true
+          
+          # Delete old images to prevent caching issues
+          docker rmi -f $(docker images -q "$IMAGE_NAME") || true
+
+          # Pull the latest image
+          docker pull "$IMAGE_NAME:latest"
+
+          # Run the container using the latest image
+          docker run -d --name nginx-dev -p 8082:80 "$IMAGE_NAME:latest"
+
+      - name: Cleanup Docker Cache
+        run: docker system prune -af
+        if: always()
+
+
+  deploy-staging:
+    runs-on: bka-devops
+    timeout-minutes: 5
+    environment: dockerhub-registry
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Get Latest v<num> Docker Tag
+        run: |
+          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/my-nginx-app"
+          DOCKER_TAG=$(curl -s "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/tags?page_size=20" | \
+          jq -r '[.results[] | select(.name | test("^v[0-9]+$"))] | sort_by(.last_updated) | reverse | .[0].name')
+          echo "DOCKER_TAG=$DOCKER_TAG" >> $GITHUB_ENV
+          echo "✅ Using latest Docker tag: $DOCKER_TAG"
+
+      - name: Pull and Run Latest Staging Image
+        run: |
+          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/my-nginx-app"
+          docker pull "$IMAGE_NAME:$DOCKER_TAG"
+          docker stop nginx-staging || true
+          docker rm -f nginx-staging || true
+          docker rmi -f $(docker images -q "$IMAGE_NAME") || true
+          docker run -d --name nginx-staging -p 8081:80 "$IMAGE_NAME:$DOCKER_TAG"
+
+
+  deploy-production:
+    runs-on: bka-devops
+    timeout-minutes: 5
+    environment: dockerhub-registry
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Get Latest v<num> Docker Tag
+        run: |
+          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/my-nginx-app"
+          DOCKER_TAG=$(curl -s "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/tags?page_size=20" | \
+          jq -r '[.results[] | select(.name | test("^v[0-9]+$"))] | sort_by(.last_updated) | reverse | .[0].name')
+          echo "DOCKER_TAG=$DOCKER_TAG" >> $GITHUB_ENV
+          echo "✅ Using latest Docker tag: $DOCKER_TAG"
+
+      - name: Pull and Run Latest Production Image
+        run: |
+          IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME }}/my-nginx-app"
+          docker pull "$IMAGE_NAME:$DOCKER_TAG"
+          docker stop nginx-prod || true
+          docker rm -f nginx-prod || true
+          docker rmi -f $(docker images -q "$IMAGE_NAME") || true
+          docker run -d --name nginx-prod -p 8080:80 "$IMAGE_NAME:$DOCKER_TAG"
