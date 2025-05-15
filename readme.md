@@ -304,7 +304,21 @@ volumes:
 
 ✅ Step 2: Update server.js
 
-- Modify server.js to work with MySQL instead of MongoDB.
+- Modify server.js to work with MySQL instead of MongoDB and change package.json
+
+```json
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^7.2.1",
+    "cors": "^2.8.5",
+    "mysql2": "^3.9.0"
+  }
+}
+```
 
 example:
 
