@@ -320,30 +320,39 @@ app.use(express.json());
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Database connection
-const db = mysql.createConnection({
-    host: 'mysql',
-    user: 'user',
-    password: 'password',
-    database: 'mydatabase'
-});
+const DB_CONFIG = {
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || ''
+};
 
-db.connect(err => {
-    if (err) {
-        console.error('MySQL connection error:', err);
-    } else {
-        console.log('Connected to MySQL database');
-        db.query(`CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            firstName VARCHAR(50),
-            lastName VARCHAR(50),
-            age INT,
-            city VARCHAR(50)
-        )`, (err) => {
-            if (err) console.error("Table creation error:", err);
-        });
-    }
-});
+let db;
+
+function connectWithRetry() {
+    db = mysql.createConnection(DB_CONFIG);
+
+    db.connect(err => {
+        if (err) {
+            console.error('MySQL connection error:', err.message);
+            console.log('Retrying in 3 seconds...');
+            setTimeout(connectWithRetry, 3000); // Retry after 3 seconds
+        } else {
+            console.log('Connected to MySQL database');
+            db.query(`CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                firstName VARCHAR(50),
+                lastName VARCHAR(50),
+                age INT,
+                city VARCHAR(50)
+            )`, (err) => {
+                if (err) console.error("Table creation error:", err);
+            });
+        }
+    });
+}
+
+connectWithRetry();
 
 // Insert user data
 app.post('/submit', (req, res) => {
@@ -394,6 +403,7 @@ app.get('/', (req, res) => {
 const PORT = 3000;
 const HOST = '0.0.0.0';
 app.listen(PORT, HOST, () => console.log(`Frontend running on http://${HOST}:${PORT}`));
+
 ```
 
 ✅ Step 3: Update index.html
